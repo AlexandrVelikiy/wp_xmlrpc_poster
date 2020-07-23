@@ -91,15 +91,25 @@ class XmlrpcPoster():
     def get_category(self,wp,terms):
         # получаем категорию, если такой нет то создаем
         try:
+            find_terms = []
             exist_terms = wp.call(GetTerms('category',{'search':terms}))
+            if len(exist_terms) > 1:
+                for exist_term in exist_terms:
+                    name = str(exist_term)
+                    if name.lower() == terms.lower():
+                        find_terms.append(exist_term)
+                        break
+            else:
+                find_terms = exist_terms
+
             if not exist_terms:
                 tag = WordPressTerm()
                 tag.taxonomy = 'category'
                 tag.name = terms
                 tag.id = wp.call(NewTerm(tag))
-                exist_terms = wp.call(GetTerms('category', {'search': terms}))
+                find_terms = wp.call(GetTerms('category', {'search': terms}))
 
-            return exist_terms
+            return find_terms
         except (InvalidCredentialsError, ServerConnectionError):
             return None
         except:
@@ -198,6 +208,7 @@ class XmlrpcPoster():
         try:
             date = None
             category = None
+            post_text = ''
             if len(post) > 1:
                 for p in post:
                     f = p.find(':')
@@ -208,15 +219,15 @@ class XmlrpcPoster():
                         # это категория
                         category = p[f+1:]
                     else:
-                        post = p
+                        post_text = post_text + p
             else:
-                post = post.pop()
+                post_text = post.pop()
 
-            h1_st = post.find('<h1>')
-            h1_en = post.find('</h1>')
-            title = post[h1_st + 4:h1_en]
+            h1_st = post_text.find('<h1>')
+            h1_en = post_text.find('</h1>')
+            title = post_text[h1_st + 4:h1_en]
 
-            return title,post,date,category
+            return title,post_text,date,category
         except:
             self.logger.exception('get_post_title_data_category')
 
