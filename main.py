@@ -79,7 +79,7 @@ class XmlrpcPoster():
                 if file_name == self.file_name_urls:
                     continue
                 #with open(os.path.join(dir_name,file_name), 'r',encoding='UTF-8') as file:
-                with open(os.path.join(dir_name, file_name), 'r') as file:
+                with open(os.path.join(dir_name, file_name), 'r', encoding='UTF-8') as file:
                     post = [line.rstrip() for line in file]
                     if post:
                         posts.append(post)
