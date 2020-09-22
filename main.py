@@ -1,7 +1,7 @@
 from wordpress_xmlrpc import Client, WordPressPost
 from wordpress_xmlrpc.methods.posts import GetPosts, NewPost, EditPost, GetPost
 from wordpress_xmlrpc.methods.taxonomies import *
-from wordpress_xmlrpc.exceptions import InvalidCredentialsError,ServerConnectionError
+from wordpress_xmlrpc.exceptions import *
 import logging
 import os
 from multiprocessing.dummy import Pool as ThreadPool
@@ -60,7 +60,7 @@ class XmlrpcPoster():
         self.file_name_urls = self.config.get('file_name_urls')
         self.file_path_posts_folder = os.path.join(os.getcwd(),self.config.get('file_name_posts_folder'))
         self.thread_count = int(self.config.get('thread_count'))
-
+        self.save_report_urls = self.config.get('save_report_urls')
 
     def load_urls_list(self,file_name):
         try:
@@ -76,13 +76,16 @@ class XmlrpcPoster():
             file_names = [x for x in os.listdir(dir_name) if x.endswith(".txt")]
 
             for file_name in file_names:
-                if file_name == self.file_name_urls:
+                if file_name in [self.file_name_urls,'faild_urls.txt','ok_urls.txt'] :
                     continue
-                #with open(os.path.join(dir_name,file_name), 'r',encoding='UTF-8') as file:
-                with open(os.path.join(dir_name, file_name), 'r', encoding='UTF-8') as file:
-                    post = [line.rstrip() for line in file]
-                    if post:
-                        posts.append(post)
+                try:
+                    with open(os.path.join(dir_name,file_name), 'r',encoding='UTF-8') as file:
+                    #with open(os.path.join(dir_name, file_name), 'r') as file:
+                        post = [line.rstrip() for line in file]
+                        if post:
+                            posts.append(post)
+                except Exception as e:
+                    self.logger.error(f"Ошибка чтения файла поста {file_name}: {e.args[0]} ")
 
             return posts
         except:
@@ -118,7 +121,7 @@ class XmlrpcPoster():
 
     def send_post_map(self, data):
         nom = data.get('nom')
-        url = data.get('url')
+        url_log_pas = data.get('url')
         post_text = data.get('post')
         # новые поля
         title = data.get('title')
@@ -128,7 +131,7 @@ class XmlrpcPoster():
         #date_time = datetime.datetime(2020, 6, 22)
         #category = 'test categoryes'
 
-        url, user, password = url.split(';')
+        url, user, password = url_log_pas.split(';')
         try:
             if self.proxy != 'None':
                 wp = Client(url + '/xmlrpc.php', user, password,transport=self.transport)
@@ -137,7 +140,7 @@ class XmlrpcPoster():
         except:
             #self.logger.exception('Client')
             self.logger.info(f'{nom}:{url} - {Fore.RED}failed{Style.RESET_ALL}')
-            return {'url':url,'post_id':False}
+            return {'url_log_pas':url_log_pas,'url':url,'post_id':False}
         try:
 
             post = WordPressPost()
@@ -160,18 +163,25 @@ class XmlrpcPoster():
             post.post_status = 'publish'
             try:
                 post.id= wp.call(NewPost(post))
-            except (InvalidCredentialsError, ServerConnectionError, socket.timeout):
+            except (InvalidCredentialsError, ServerConnectionError, ServerConnectionError,
+                    XmlrpcDisabledError, socket.timeout):
                 self.logger.info(f'{nom}:{url} - {Fore.RED}failed{Style.RESET_ALL}')
-                return {'url': url, 'post_id': False}
+                return {'url_log_pas':url_log_pas,'url': url, 'post_id': False}
 
             # пока не решил брать отсюда урл или нет
             #post_new = wp.call(GetPost(post.id))
             self.logger.info(f'{nom}:{url} send post! {Fore.GREEN}Post urls {url}/?p={post.id}{Style.RESET_ALL}')
-            return {'url': url, 'post_id': post.id}
+            return {'url_log_pas':url_log_pas,'url': url, 'post_id': post.id}
 
-        except:
-            self.logger.exception('send_post')
-            return {'url':None,'post_id':None}
+        except Exception as e:
+            try:
+                faultCode = e.faultCode
+                faultString = e.faultString.encode ("utf-8")
+                self.logger.info(f'{Fore.RED}{nom}: Error send post {url} {faultCode} {faultString} {Style.RESET_ALL}')
+                return {'url_log_pas': url_log_pas, 'url': url, 'post_id': False}
+            except:
+                return {'url_log_pas': url_log_pas, 'url': url, 'post_id': False}
+
 
     def create_project_log(self,project):
         path = os.path.join(self.file_path_posts_folder, project)
@@ -184,6 +194,22 @@ class XmlrpcPoster():
             for f in repotrs:
                 with open(f, 'rb') as fd:
                     shutil.copyfileobj(fd, wfd)
+
+    def save_sucses_urls(self, result, project, page):
+        with open(os.path.join(self.file_path_posts_folder, project, page, 'ok_urls.txt'), 'w') as file:
+            res_str = ""
+            for r in result:
+                if r['post_id']:
+                    res_str = f"{r['url_log_pas']}"
+                    file.writelines(res_str + '\n')
+
+    def save_faild_urls(self, result, project, page):
+        with open(os.path.join(self.file_path_posts_folder, project, page, 'faild_urls.txt'), 'w') as file:
+            res_str = ""
+            for r in result:
+                if not r['post_id']:
+                    res_str = f"{r['url_log_pas']}"
+                    file.writelines(res_str + '\n')
 
     def create_log(self,result,project,page):
         with open(os.path.join(self.file_path_posts_folder,project,page,'report.csv'),'w') as file:
@@ -314,7 +340,12 @@ class XmlrpcPoster():
 
         self.logger.info(f'{Fore.GREEN}~start posting folder {project}/{page} ...{Style.RESET_ALL}')
         results = pool.map(self.send_post_map, data)
-        self.create_log(results, project,page)
+
+        if self.save_report_urls: # если включена такая опция
+            self.save_faild_urls(results, project, page)
+            self.save_sucses_urls(results, project, page)
+
+        self.create_log(results, project, page)
         pool.close()
         pool.join()
         self.logger.info(f'{Fore.YELLOW}~posting folder {project}/{page} successfully {Style.RESET_ALL}')
@@ -344,7 +375,7 @@ def main():
         logger.addHandler(fh)
 
         ###
-        logger.info('Xmlrpc poster starting')
+        logger.info('Xmlrpc v.1.4 poster starting')
         poster = XmlrpcPoster()
         poster.run()
 
